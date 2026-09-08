@@ -29,13 +29,22 @@ jobs:
     steps:
       - name: Validate inputs
         run: |
-          for var in service_name deploy_dir deploy_tag ssh_host; do
-            val="${{ inputs[var] }}"
-            if [ -z "$val" ]; then
-              echo "::error::Input '$var' is required and cannot be empty"
-              exit 1
-            fi
-          done
+          if [ -z "${{ inputs.service_name }}" ]; then
+            echo "::error::Input 'service_name' is required and cannot be empty"
+            exit 1
+          fi
+          if [ -z "${{ inputs.deploy_dir }}" ]; then
+            echo "::error::Input 'deploy_dir' is required and cannot be empty"
+            exit 1
+          fi
+          if [ -z "${{ inputs.deploy_tag }}" ]; then
+            echo "::error::Input 'deploy_tag' is required and cannot be empty"
+            exit 1
+          fi
+          if [ -z "${{ inputs.ssh_host }}" ]; then
+            echo "::error::Input 'ssh_host' is required and cannot be empty"
+            exit 1
+          fi
 
       - name: Validate secrets
         run: |
@@ -64,12 +73,15 @@ jobs:
              git fetch --tags && \
              git checkout ${{ inputs.deploy_tag }}"
 
-      - name: Write config file to server
-        if: ${{ secrets.SERVICE_CONFIG != '' }}
+      - name: Write .env to server
+        env:
+          SERVICE_CONFIG: ${{ secrets.SERVICE_CONFIG }}
         run: |
-          printf '%s' "${{ secrets.SERVICE_CONFIG }}" | \
-            ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
-            "cat > ${{ inputs.deploy_dir }}/.env"
+          if [ -n "$SERVICE_CONFIG" ]; then
+            printf '%s' "$SERVICE_CONFIG" | \
+              ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
+              "cat > ${{ inputs.deploy_dir }}/.env"
+          fi
 
       - name: Build new images (old containers still running)
         run: |
