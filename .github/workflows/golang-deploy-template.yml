@@ -70,7 +70,7 @@ jobs:
         run: |
           ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
             "cd ${{ inputs.deploy_dir }} && \
-             git fetch --tags && \
+             git fetch --tags --force && \
              git checkout ${{ inputs.deploy_tag }}"
 
       - name: Write .env to server
