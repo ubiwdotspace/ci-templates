@@ -1,0 +1,98 @@
+name: Go Service Deploy Template
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: 'Systemd service name (e.g., auth-service)'
+        type: string
+        required: true
+      deploy_dir:
+        description: 'Absolute path to deploy directory on server (e.g., /var/www/auth-service)'
+        type: string
+        required: true
+      deploy_tag:
+        description: 'Git tag to deploy (e.g., v1.0.0)'
+        type: string
+        required: true
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.service_name }} @ ${{ inputs.deploy_tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Validate inputs
+        run: |
+          if [ -z "${{ inputs.service_name }}" ]; then
+            echo "::error::Input 'service_name' is required and cannot be empty"
+            exit 1
+          fi
+          if [ -z "${{ inputs.deploy_dir }}" ]; then
+            echo "::error::Input 'deploy_dir' is required and cannot be empty"
+            exit 1
+          fi
+          if [ -z "${{ inputs.deploy_tag }}" ]; then
+            echo "::error::Input 'deploy_tag' is required and cannot be empty"
+            exit 1
+          fi
+
+      - name: Validate secrets
+        run: |
+          MISSING=""
+          [ -z "${{ secrets.ORACLE_SSH_HOST }}" ] && MISSING="$MISSING ORACLE_SSH_HOST"
+          [ -z "${{ secrets.ORACLE_SSH_USER }}" ] && MISSING="$MISSING ORACLE_SSH_USER"
+          [ -z "${{ secrets.ORACLE_SSH_KEY }}" ]  && MISSING="$MISSING ORACLE_SSH_KEY"
+          if [ -n "$MISSING" ]; then
+            echo "::error::Missing required secrets:$MISSING"
+            exit 1
+          fi
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.ORACLE_SSH_KEY }}
+
+      - name: Add server to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "${{ secrets.ORACLE_SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Checkout tag on server
+        run: |
+          ssh "${{ secrets.ORACLE_SSH_USER }}@${{ secrets.ORACLE_SSH_HOST }}" \
+            "cd ${{ inputs.deploy_dir }} && \
+             git fetch --tags && \
+             git checkout ${{ inputs.deploy_tag }}"
+
+      - name: Write config file to server
+        if: ${{ secrets.SERVICE_CONFIG != '' }}
+        run: |
+          printf '%s' "${{ secrets.SERVICE_CONFIG }}" | \
+            ssh "${{ secrets.ORACLE_SSH_USER }}@${{ secrets.ORACLE_SSH_HOST }}" \
+            "cat > ${{ inputs.deploy_dir }}/internal/config/config.yml"
+
+      - name: Restart service
+        run: |
+          ssh "${{ secrets.ORACLE_SSH_USER }}@${{ secrets.ORACLE_SSH_HOST }}" \
+            "sudo systemctl restart ${{ inputs.service_name }}"
+
+      - name: Health check
+        run: |
+          echo "Polling service health for up to 15 seconds..."
+          for i in $(seq 1 5); do
+            STATUS=$(ssh "${{ secrets.ORACLE_SSH_USER }}@${{ secrets.ORACLE_SSH_HOST }}" \
+              "systemctl is-active ${{ inputs.service_name }}" || true)
+            echo "Check $i/5: $STATUS"
+            if [ "$STATUS" = "active" ]; then
+              echo "Service is active. Deploy succeeded."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::Service did not become active within 15 seconds"
+          ssh "${{ secrets.ORACLE_SSH_USER }}@${{ secrets.ORACLE_SSH_HOST }}" \
+            "journalctl -u ${{ inputs.service_name }} -n 20 --no-pager" \
+            >> "$GITHUB_STEP_SUMMARY" || true
+          exit 1
