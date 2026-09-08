@@ -15,6 +15,10 @@ on:
         description: 'Git tag to deploy (e.g., v1.0.0)'
         type: string
         required: true
+      ssh_host:
+        description: 'IP or hostname of the target server'
+        type: string
+        required: true
 
 jobs:
   deploy:
@@ -25,23 +29,17 @@ jobs:
     steps:
       - name: Validate inputs
         run: |
-          if [ -z "${{ inputs.service_name }}" ]; then
-            echo "::error::Input 'service_name' is required and cannot be empty"
-            exit 1
-          fi
-          if [ -z "${{ inputs.deploy_dir }}" ]; then
-            echo "::error::Input 'deploy_dir' is required and cannot be empty"
-            exit 1
-          fi
-          if [ -z "${{ inputs.deploy_tag }}" ]; then
-            echo "::error::Input 'deploy_tag' is required and cannot be empty"
-            exit 1
-          fi
+          for var in service_name deploy_dir deploy_tag ssh_host; do
+            val="${{ inputs[var] }}"
+            if [ -z "$val" ]; then
+              echo "::error::Input '$var' is required and cannot be empty"
+              exit 1
+            fi
+          done
 
       - name: Validate secrets
         run: |
           MISSING=""
-          [ -z "${{ secrets.ORACLE_SSH_HOST }}" ] && MISSING="$MISSING ORACLE_SSH_HOST"
           [ -z "${{ secrets.ORACLE_SSH_USER }}" ] && MISSING="$MISSING ORACLE_SSH_USER"
           [ -z "${{ secrets.ORACLE_SSH_KEY }}" ]  && MISSING="$MISSING ORACLE_SSH_KEY"
           if [ -n "$MISSING" ]; then
@@ -57,11 +55,11 @@ jobs:
       - name: Add server to known_hosts
         run: |
           mkdir -p ~/.ssh
-          ssh-keyscan -H "${{ secrets.ORACLE_SSH_HOST }}" >> ~/.ssh/known_hosts
+          ssh-keyscan -H "${{ inputs.ssh_host }}" >> ~/.ssh/known_hosts
 
       - name: Checkout tag on server
         run: |
-          ssh "${{ secrets.ORACLE_SSH_USER }}@${{ secrets.ORACLE_SSH_HOST }}" \
+          ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
             "cd ${{ inputs.deploy_dir }} && \
              git fetch --tags && \
              git checkout ${{ inputs.deploy_tag }}"
@@ -70,19 +68,29 @@ jobs:
         if: ${{ secrets.SERVICE_CONFIG != '' }}
         run: |
           printf '%s' "${{ secrets.SERVICE_CONFIG }}" | \
-            ssh "${{ secrets.ORACLE_SSH_USER }}@${{ secrets.ORACLE_SSH_HOST }}" \
-            "cat > ${{ inputs.deploy_dir }}/internal/config/config.yml"
+            ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
+            "cat > ${{ inputs.deploy_dir }}/.env"
 
-      - name: Restart service
+      - name: Build new images (old containers still running)
         run: |
-          ssh "${{ secrets.ORACLE_SSH_USER }}@${{ secrets.ORACLE_SSH_HOST }}" \
-            "sudo systemctl restart ${{ inputs.service_name }}"
+          ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
+            "cd ${{ inputs.deploy_dir }} && docker compose build"
+
+      - name: Swap to new images
+        run: |
+          ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
+            "cd ${{ inputs.deploy_dir }} && docker compose up -d --no-build"
+
+      - name: Clean up old images
+        run: |
+          ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
+            "docker image prune -f" || true
 
       - name: Health check
         run: |
           echo "Polling service health for up to 15 seconds..."
           for i in $(seq 1 5); do
-            STATUS=$(ssh "${{ secrets.ORACLE_SSH_USER }}@${{ secrets.ORACLE_SSH_HOST }}" \
+            STATUS=$(ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
               "systemctl is-active ${{ inputs.service_name }}" || true)
             echo "Check $i/5: $STATUS"
             if [ "$STATUS" = "active" ]; then
@@ -92,7 +100,7 @@ jobs:
             sleep 3
           done
           echo "::error::Service did not become active within 15 seconds"
-          ssh "${{ secrets.ORACLE_SSH_USER }}@${{ secrets.ORACLE_SSH_HOST }}" \
+          ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
             "journalctl -u ${{ inputs.service_name }} -n 20 --no-pager" \
             >> "$GITHUB_STEP_SUMMARY" || true
           exit 1
