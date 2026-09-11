@@ -93,6 +93,11 @@ jobs:
           ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
             "cd ${{ inputs.deploy_dir }} && docker compose up -d --no-build"
 
+      - name: Run database migrations
+        run: |
+          ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
+            "cd ${{ inputs.deploy_dir }} && make migrate-up"
+
       - name: Clean up old images
         run: |
           ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
