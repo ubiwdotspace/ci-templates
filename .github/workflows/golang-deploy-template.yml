@@ -95,8 +95,23 @@ jobs:
 
       - name: Run database migrations
         run: |
-          ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
-            "cd ${{ inputs.deploy_dir }} && make migrate-up"
+          ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" bash << 'ENDSSH'
+            set -e
+            cd ${{ inputs.deploy_dir }}
+            echo "Waiting for PostgreSQL..."
+            until docker compose exec -T postgres pg_isready -U authorization -d authorization >/dev/null 2>&1; do sleep 1; done
+            echo "Running database migrations..."
+            migrations=$(find migration/scripts -name '*.up.sql' -type f | sort)
+            if [ -z "$migrations" ]; then
+              echo "No migration files found"
+              exit 1
+            fi
+            for migration in $migrations; do
+              echo "Applying $migration"
+              docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U authorization -d authorization < "$migration"
+            done
+            echo "Migrations applied successfully."
+          ENDSSH
 
       - name: Clean up old images
         run: |
