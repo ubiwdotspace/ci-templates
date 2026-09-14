@@ -99,7 +99,7 @@ jobs:
             "cd ${{ inputs.deploy_dir }} && \
              for f in \$(find migration/scripts -name '*.up.sql' -type f | sort); do \
                echo \"Applying \$f\" && \
-               docker compose exec -T postgres psql -U authorization -d authorization -v ON_ERROR_STOP=1 -f \"/\$f\"; \
+               cat \"\$f\" | docker compose exec -T postgres psql -U authorization -d authorization -v ON_ERROR_STOP=1; \
              done && \
              echo 'Migrations applied successfully.'"
 
