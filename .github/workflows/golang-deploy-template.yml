@@ -19,6 +19,32 @@ on:
         description: 'IP or hostname of the target server'
         type: string
         required: true
+      compose_file:
+        description: 'Compose file relative to deploy_dir'
+        type: string
+        required: false
+        default: 'docker-compose.yml'
+      postgres_deploy_dir:
+        description: 'Directory containing the shared PostgreSQL compose project'
+        type: string
+        required: true
+      postgres_compose_file:
+        description: 'PostgreSQL compose file relative to postgres_deploy_dir'
+        type: string
+        required: false
+        default: 'docker-compose.yml'
+      database_user:
+        description: 'PostgreSQL role used to apply this service migrations'
+        type: string
+        required: true
+      database_name:
+        description: 'PostgreSQL database used by this service'
+        type: string
+        required: true
+      healthcheck_url:
+        description: 'URL reachable from the server for the REST health check'
+        type: string
+        required: true
 
 jobs:
   deploy:
@@ -43,6 +69,18 @@ jobs:
           fi
           if [ -z "${{ inputs.ssh_host }}" ]; then
             echo "::error::Input 'ssh_host' is required and cannot be empty"
+            exit 1
+          fi
+          if [ -z "${{ inputs.postgres_deploy_dir }}" ]; then
+            echo "::error::Input 'postgres_deploy_dir' is required and cannot be empty"
+            exit 1
+          fi
+          if [ -z "${{ inputs.database_user }}" ] || [ -z "${{ inputs.database_name }}" ]; then
+            echo "::error::Inputs 'database_user' and 'database_name' are required"
+            exit 1
+          fi
+          if [ -z "${{ inputs.healthcheck_url }}" ]; then
+            echo "::error::Input 'healthcheck_url' is required and cannot be empty"
             exit 1
           fi
 
@@ -75,54 +113,70 @@ jobs:
 
       - name: Write .env to server
         env:
-          SERVICE_CONFIG: ${{ secrets.SERVICE_CONFIG }}
+          SERVICE_ENV: ${{ secrets.SERVICE_ENV }}
+          LEGACY_SERVICE_CONFIG: ${{ secrets.SERVICE_CONFIG }}
         run: |
-          if [ -n "$SERVICE_CONFIG" ]; then
-            printf '%s' "$SERVICE_CONFIG" | \
-              ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
-              "cat > ${{ inputs.deploy_dir }}/.env"
+          CONTENT="$SERVICE_ENV"
+          if [ -z "$CONTENT" ]; then
+            CONTENT="$LEGACY_SERVICE_CONFIG"
           fi
+          if [ -z "$CONTENT" ]; then
+            echo "::error::Missing SERVICE_ENV repository secret"
+            exit 1
+          fi
+          printf '%s\n' "$CONTENT" | \
+            ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
+            "umask 077 && cat > ${{ inputs.deploy_dir }}/.env"
 
       - name: Build new images (old containers still running)
         run: |
           ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
-            "cd ${{ inputs.deploy_dir }} && docker compose build"
-
-      - name: Swap to new images
-        run: |
-          ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
-            "cd ${{ inputs.deploy_dir }} && docker compose up -d --no-build"
+            "cd ${{ inputs.deploy_dir }} && \
+             docker compose -f ${{ inputs.compose_file }} build"
 
       - name: Run database migrations
         run: |
           ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
-            "cd ${{ inputs.deploy_dir }} && \
-             for f in \$(find migration/scripts -name '*.up.sql' -type f | sort); do \
-               echo \"Applying \$f\" && \
-               cat \"\$f\" | docker compose exec -T postgres psql -U authorization -d authorization -v ON_ERROR_STOP=1; \
-             done && \
+            "set -e; \
+             for f in \$(find ${{ inputs.deploy_dir }}/migration/scripts -name '*.up.sql' -type f | sort); do \
+               echo \"Applying \$f\"; \
+               cat \"\$f\" | docker compose \
+                 --project-directory ${{ inputs.postgres_deploy_dir }} \
+                 -f ${{ inputs.postgres_deploy_dir }}/${{ inputs.postgres_compose_file }} \
+                 exec -T postgres psql \
+                 -U ${{ inputs.database_user }} \
+                 -d ${{ inputs.database_name }} \
+                 -v ON_ERROR_STOP=1; \
+             done; \
              echo 'Migrations applied successfully.'"
+
+      - name: Swap to new images
+        run: |
+          ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
+            "cd ${{ inputs.deploy_dir }} && \
+             docker compose -f ${{ inputs.compose_file }} up -d --no-build"
+
+      - name: Health check
+        run: |
+          echo "Polling ${{ inputs.healthcheck_url }} for up to 30 seconds..."
+          for i in $(seq 1 10); do
+            echo "Health check $i/10"
+            if ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
+              "curl --fail --silent --show-error --max-time 3 '${{ inputs.healthcheck_url }}' >/dev/null"; then
+              echo "Health check passed. Deploy succeeded."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::Service health check failed"
+          ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
+            "cd ${{ inputs.deploy_dir }} && \
+             docker compose -f ${{ inputs.compose_file }} ps && \
+             docker compose -f ${{ inputs.compose_file }} logs --tail 50" \
+            >> "$GITHUB_STEP_SUMMARY" || true
+          exit 1
 
       - name: Clean up old images
         run: |
           ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
             "docker image prune -f" || true
-
-      - name: Health check
-        run: |
-          echo "Polling service health for up to 15 seconds..."
-          for i in $(seq 1 5); do
-            STATUS=$(ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
-              "systemctl is-active ${{ inputs.service_name }}" || true)
-            echo "Check $i/5: $STATUS"
-            if [ "$STATUS" = "active" ]; then
-              echo "Service is active. Deploy succeeded."
-              exit 0
-            fi
-            sleep 3
-          done
-          echo "::error::Service did not become active within 15 seconds"
-          ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
-            "journalctl -u ${{ inputs.service_name }} -n 20 --no-pager" \
-            >> "$GITHUB_STEP_SUMMARY" || true
-          exit 1
