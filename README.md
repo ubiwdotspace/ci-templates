@@ -6,7 +6,7 @@ Centralized CI/CD workflows for LuvMatch backend services (`ubiwdotspace`).
 
 ### `golang-deploy-template.yml`
 
-Deploys a Go backend service to Oracle Cloud via SSH. Triggered by child repos using `workflow_call`.
+Deploys a Go backend service to Oracle Cloud via SSH. Triggered by child repos using `workflow_call`. Database migrations can be disabled for stateless services, and health checks support HTTP or the standard gRPC health service.
 
 **Flow**: git checkout tag → write `.env` → build → migrate shared PostgreSQL → swap containers → HTTP health check
 
@@ -19,11 +19,13 @@ Deploys a Go backend service to Oracle Cloud via SSH. Triggered by child repos u
 | `deploy_tag` | ✅ | Git tag to deploy (e.g., `v1.0.0`) |
 | `ssh_host` | ✅ | Target server hostname or IP |
 | `compose_file` | | Compose file relative to the deploy directory |
-| `postgres_deploy_dir` | ✅ | Deploy directory that owns the shared PostgreSQL service |
+| `postgres_deploy_dir` | When migrations are enabled | Deploy directory that owns the shared PostgreSQL service |
 | `postgres_compose_file` | | PostgreSQL compose file relative to its deploy directory |
-| `database_user` | ✅ | Database role used to apply migrations |
-| `database_name` | ✅ | Database receiving the service migrations |
-| `healthcheck_url` | ✅ | Health URL reachable from the target server |
+| `database_user` | When migrations are enabled | Database role used to apply migrations |
+| `database_name` | When migrations are enabled | Database receiving the service migrations |
+| `run_migrations` | | Apply SQL migrations (defaults to `true`) |
+| `healthcheck_url` | For HTTP checks | Health URL reachable from the target server |
+| `healthcheck_type` | | `http` (default) or `grpc`; gRPC checks run `./healthcheck` in the `grpc` compose service |
 
 **Secrets** (via `secrets: inherit` from Organization)
 
@@ -32,7 +34,7 @@ Deploys a Go backend service to Oracle Cloud via SSH. Triggered by child repos u
 | `ORACLE_SSH_HOST` | Public IP of Oracle server |
 | `ORACLE_SSH_USER` | SSH username (`ubuntu`) |
 | `ORACLE_SSH_KEY` | PEM private key content |
-| `SERVICE_ENV` | Repo-specific production `.env` content |
+| `SERVICE_ENV` | Optional repo-specific production `.env` content; when absent, the existing server `.env` is kept |
 | `SERVICE_CONFIG` | Legacy fallback for `SERVICE_ENV` during migration |
 
 ## Usage
@@ -65,8 +67,10 @@ jobs:
     secrets: inherit
 ```
 
+Stateless gRPC services can set `run_migrations: false` and `healthcheck_type: grpc`. Their `grpc` container must include an executable `./healthcheck` that checks the standard gRPC health service.
+
 ## Adding a New Service
 
 1. Set up server: create deploy dir, systemd unit, sudoers entry
-2. Add a repo-level `SERVICE_ENV` secret containing that service's production `.env`
+2. Add a repo-level `SERVICE_ENV` secret containing that service's production `.env`, or provision the `.env` on the server over SSH
 3. Create `.github/workflows/deploy.yml` in the child repo with the correct `service_name` and `deploy_dir`

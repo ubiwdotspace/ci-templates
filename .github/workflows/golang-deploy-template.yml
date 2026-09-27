@@ -27,7 +27,7 @@ on:
       postgres_deploy_dir:
         description: 'Directory containing the shared PostgreSQL compose project'
         type: string
-        required: true
+        required: false
       postgres_compose_file:
         description: 'PostgreSQL compose file relative to postgres_deploy_dir'
         type: string
@@ -36,15 +36,25 @@ on:
       database_user:
         description: 'PostgreSQL role used to apply this service migrations'
         type: string
-        required: true
+        required: false
       database_name:
         description: 'PostgreSQL database used by this service'
         type: string
-        required: true
+        required: false
+      run_migrations:
+        description: 'Apply this service’s SQL migrations before swapping containers'
+        type: boolean
+        required: false
+        default: true
       healthcheck_url:
         description: 'URL reachable from the server for the REST health check'
         type: string
-        required: true
+        required: false
+      healthcheck_type:
+        description: 'Service health check protocol (http or grpc)'
+        type: string
+        required: false
+        default: http
 
 jobs:
   deploy:
@@ -71,16 +81,22 @@ jobs:
             echo "::error::Input 'ssh_host' is required and cannot be empty"
             exit 1
           fi
-          if [ -z "${{ inputs.postgres_deploy_dir }}" ]; then
-            echo "::error::Input 'postgres_deploy_dir' is required and cannot be empty"
+          if [ "${{ inputs.run_migrations }}" = "true" ]; then
+            if [ -z "${{ inputs.postgres_deploy_dir }}" ]; then
+              echo "::error::Input 'postgres_deploy_dir' is required when run_migrations is true"
+              exit 1
+            fi
+            if [ -z "${{ inputs.database_user }}" ] || [ -z "${{ inputs.database_name }}" ]; then
+              echo "::error::Inputs 'database_user' and 'database_name' are required when run_migrations is true"
+              exit 1
+            fi
+          fi
+          if [ "${{ inputs.healthcheck_type }}" = "http" ] && [ -z "${{ inputs.healthcheck_url }}" ]; then
+            echo "::error::Input 'healthcheck_url' is required for HTTP health checks"
             exit 1
           fi
-          if [ -z "${{ inputs.database_user }}" ] || [ -z "${{ inputs.database_name }}" ]; then
-            echo "::error::Inputs 'database_user' and 'database_name' are required"
-            exit 1
-          fi
-          if [ -z "${{ inputs.healthcheck_url }}" ]; then
-            echo "::error::Input 'healthcheck_url' is required and cannot be empty"
+          if [ "${{ inputs.healthcheck_type }}" != "http" ] && [ "${{ inputs.healthcheck_type }}" != "grpc" ]; then
+            echo "::error::Input 'healthcheck_type' must be 'http' or 'grpc'"
             exit 1
           fi
 
@@ -121,7 +137,12 @@ jobs:
             CONTENT="$LEGACY_SERVICE_CONFIG"
           fi
           if [ -z "$CONTENT" ]; then
-            echo "::error::Missing SERVICE_ENV repository secret"
+            if ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
+              "test -s ${{ inputs.deploy_dir }}/.env"; then
+              echo "SERVICE_ENV is empty; keeping the existing server .env."
+              exit 0
+            fi
+            echo "::error::Missing SERVICE_ENV secret and server .env"
             exit 1
           fi
           printf '%s\n' "$CONTENT" | \
@@ -135,6 +156,7 @@ jobs:
              docker compose -f ${{ inputs.compose_file }} build"
 
       - name: Run database migrations
+        if: inputs.run_migrations
         run: |
           ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
             "set -e; \
@@ -157,6 +179,7 @@ jobs:
              docker compose -f ${{ inputs.compose_file }} up -d --no-build"
 
       - name: Health check
+        if: inputs.healthcheck_type == 'http'
         run: |
           echo "Polling ${{ inputs.healthcheck_url }} for up to 30 seconds..."
           for i in $(seq 1 10); do
@@ -169,6 +192,28 @@ jobs:
             sleep 3
           done
           echo "::error::Service health check failed"
+          ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
+            "cd ${{ inputs.deploy_dir }} && \
+             docker compose -f ${{ inputs.compose_file }} ps && \
+             docker compose -f ${{ inputs.compose_file }} logs --tail 50" \
+            >> "$GITHUB_STEP_SUMMARY" || true
+          exit 1
+
+      - name: gRPC health check
+        if: inputs.healthcheck_type == 'grpc'
+        run: |
+          echo "Polling the gRPC health service for up to 30 seconds..."
+          for i in $(seq 1 10); do
+            echo "Health check $i/10"
+            if ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
+              "cd ${{ inputs.deploy_dir }} && \
+               docker compose -f ${{ inputs.compose_file }} exec -T grpc ./healthcheck"; then
+              echo "gRPC health check passed. Deploy succeeded."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::gRPC health check failed"
           ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
             "cd ${{ inputs.deploy_dir }} && \
              docker compose -f ${{ inputs.compose_file }} ps && \
