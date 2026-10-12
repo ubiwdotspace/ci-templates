@@ -159,17 +159,14 @@ jobs:
         if: inputs.run_migrations
         run: |
           ssh "${{ secrets.ORACLE_SSH_USER }}@${{ inputs.ssh_host }}" \
-            "set -e; \
-             for f in \$(find ${{ inputs.deploy_dir }}/migration/scripts -name '*.up.sql' -type f | sort); do \
-               echo \"Applying \$f\"; \
-               cat \"\$f\" | docker compose \
-                 --project-directory ${{ inputs.postgres_deploy_dir }} \
-                 -f ${{ inputs.postgres_deploy_dir }}/${{ inputs.postgres_compose_file }} \
-                 exec -T postgres psql \
-                 -U ${{ inputs.database_user }} \
-                 -d ${{ inputs.database_name }} \
-                 -v ON_ERROR_STOP=1; \
-             done; \
+            "echo 'Applying migrations using golang-migrate...' && \
+             docker run --rm \
+               -v ${{ inputs.deploy_dir }}/migration/scripts:/migrations \
+               --network luvmatch-shared \
+               migrate/migrate:v4.18.1 \
+               -path=/migrations \
+               -database 'postgres://${{ inputs.database_user }}:authorization@luvmatch-postgres:5432/${{ inputs.database_name }}?sslmode=disable' \
+               up && \
              echo 'Migrations applied successfully.'"
 
       - name: Swap to new images
