@@ -4,6 +4,16 @@ Centralized CI/CD workflows for LuvMatch backend services (`ubiwdotspace`).
 
 ## Reusable Workflows
 
+### `docker-build-ghcr-template.yml`
+
+Builds Docker container image on GitHub Actions runner with multi-arch/ARM64 QEMU support and pushes to GitHub Container Registry (`ghcr.io/ubiwdotspace/...`). Tagged with release tag, commit SHA (`sha-...`), and `latest`.
+
+**Inputs**:
+* `image_name` (required): Target image name in GHCR (e.g., `auth-service-rest`).
+* `build_arg_api`: Target binary to compile (`rest` or `grpc`). Defaults to `rest`.
+* `platforms`: Target platforms for buildx (defaults to `linux/arm64` for Oracle Ampere A1).
+* `dockerfile`: Path to Dockerfile (defaults to `Dockerfile`).
+
 ### `golang-deploy-template.yml`
 
 Deploys a Go backend service to Oracle Cloud via SSH. Triggered by child repos using `workflow_call`. Database migrations can be disabled for stateless services, and health checks support HTTP or the standard gRPC health service.
