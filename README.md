@@ -8,6 +8,10 @@ Centralized CI/CD workflows for LuvMatch backend services (`ubiwdotspace`).
 
 Builds Docker container image on GitHub Actions runner with multi-arch/ARM64 QEMU support and pushes to GitHub Container Registry (`ghcr.io/ubiwdotspace/...`). Tagged with release tag, commit SHA (`sha-...`), and `latest`.
 
+GitHub Actions build cache is scoped by image name and API so parallel REST
+and gRPC builds do not overwrite each other's cache. Existing callers need
+no new inputs; the first build after upgrading starts a new cache scope.
+
 **Inputs**:
 * `image_name` (required): Target image name in GHCR (e.g., `auth-service-rest`).
 * `build_arg_api`: Target binary to compile (`rest` or `grpc`). Defaults to `rest`.

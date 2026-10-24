@@ -69,5 +69,5 @@ jobs:
             API=${{ inputs.build_arg_api }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ inputs.image_name }}-${{ inputs.build_arg_api }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.image_name }}-${{ inputs.build_arg_api }}
