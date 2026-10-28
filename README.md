@@ -1,6 +1,6 @@
 # ci-templates (compatibility only)
 
-Shared CI/CD is moving to [infrastructure](https://github.com/ubiwdotspace/infrastructure/tree/codex/centralize-ci/ci).
+Shared CI/CD is moving to [infrastructure](https://github.com/ubiwdotspace/infrastructure/tree/main/ci).
 Use its versioned `ci-container.yml` and `cd-service.yml` workflows for new callers.
 The migration is under review; consumer PRs require private-workflow access before
 merge. Existing tags in this repository remain available and must not be moved.
