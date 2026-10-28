@@ -1,0 +1,223 @@
+name: Deploy Docker Image from GHCR
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: 'Service identifier (e.g., auth-service, luvmatch-be, payment-service, machine-learning)'
+        type: string
+        required: true
+      deploy_dir:
+        description: 'Absolute path to deploy directory on server (e.g., /var/www/auth-service)'
+        type: string
+        required: true
+      deploy_tag:
+        description: 'Git tag / image tag to deploy (e.g., v1.0.0)'
+        type: string
+        required: true
+      ssh_host:
+        description: 'IP or hostname of the target server'
+        type: string
+        required: false
+        default: '140.245.121.147'
+      compose_file:
+        description: 'Compose file relative to deploy_dir'
+        type: string
+        required: false
+        default: 'docker-compose.prod.yml'
+      postgres_deploy_dir:
+        description: 'Directory containing shared PostgreSQL compose project (when migrations are enabled)'
+        type: string
+        required: false
+        default: '/var/www/infrastructure/environments/main-vps/stacks/postgres'
+      postgres_compose_file:
+        description: 'PostgreSQL compose file relative to postgres_deploy_dir'
+        type: string
+        required: false
+        default: 'compose.yml'
+      database_user:
+        description: 'PostgreSQL role used to apply migrations'
+        type: string
+        required: false
+      database_name:
+        description: 'PostgreSQL database name'
+        type: string
+        required: false
+      run_migrations:
+        description: 'Apply SQL migrations before restarting containers'
+        type: boolean
+        required: false
+        default: false
+      healthcheck_type:
+        description: 'Protocol for health check (http, grpc, or none)'
+        type: string
+        required: false
+        default: 'http'
+      healthcheck_url:
+        description: 'URL reachable on the server for HTTP health check'
+        type: string
+        required: false
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.service_name }} @ ${{ inputs.deploy_tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Validate inputs and secrets
+        env:
+          SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
+        run: |
+          if [ -z "$SSH_KEY" ]; then
+            echo "::error::Secret ORACLE_SSH_KEY is required and cannot be empty"
+            exit 1
+          fi
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.ORACLE_SSH_KEY }}
+
+      - name: Add server to known_hosts
+        env:
+          TARGET_HOST: ${{ inputs.ssh_host || vars.DEPLOY_HOST || secrets.ORACLE_SSH_HOST || '140.245.121.147' }}
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$TARGET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Checkout code on server
+        env:
+          TARGET_HOST: ${{ inputs.ssh_host || vars.DEPLOY_HOST || secrets.ORACLE_SSH_HOST || '140.245.121.147' }}
+          SSH_USER: ${{ secrets.ORACLE_SSH_USER || 'ubuntu' }}
+        run: |
+          echo "Updating source code in ${{ inputs.deploy_dir }} to tag ${{ inputs.deploy_tag }}..."
+          ssh "${SSH_USER}@${TARGET_HOST}" "
+            cd ${{ inputs.deploy_dir }} && \
+            git fetch --tags --force && \
+            git checkout ${{ inputs.deploy_tag }} && \
+            git reset --hard ${{ inputs.deploy_tag }}
+          "
+
+      - name: Pull fresh secrets from Vaultwarden
+        env:
+          TARGET_HOST: ${{ inputs.ssh_host || vars.DEPLOY_HOST || secrets.ORACLE_SSH_HOST || '140.245.121.147' }}
+          SSH_USER: ${{ secrets.ORACLE_SSH_USER || 'ubuntu' }}
+        run: |
+          echo "Syncing production .env from Vaultwarden via Bitwarden CLI..."
+          ssh "${SSH_USER}@${TARGET_HOST}" "
+            if command -v /usr/local/bin/pull-service-env.sh &>/dev/null; then
+              sudo -n /usr/local/bin/pull-service-env.sh ${{ inputs.service_name }} || echo 'WARN: Vaultwarden pull failed; proceeding with existing .env'
+            else
+              echo 'WARN: /usr/local/bin/pull-service-env.sh not found; keeping existing .env'
+            fi
+          "
+
+      - name: Pull new images from GHCR
+        env:
+          TARGET_HOST: ${{ inputs.ssh_host || vars.DEPLOY_HOST || secrets.ORACLE_SSH_HOST || '140.245.121.147' }}
+          SSH_USER: ${{ secrets.ORACLE_SSH_USER || 'ubuntu' }}
+        run: |
+          echo "Pulling latest images from GHCR for tag ${{ inputs.deploy_tag }}..."
+          ssh "${SSH_USER}@${TARGET_HOST}" "
+            cd ${{ inputs.deploy_dir }} && \
+            export DEPLOY_TAG='${{ inputs.deploy_tag }}' && \
+            docker compose -f ${{ inputs.compose_file }} pull
+          "
+
+      - name: Run database migrations
+        if: inputs.run_migrations
+        env:
+          TARGET_HOST: ${{ inputs.ssh_host || vars.DEPLOY_HOST || secrets.ORACLE_SSH_HOST || '140.245.121.147' }}
+          SSH_USER: ${{ secrets.ORACLE_SSH_USER || 'ubuntu' }}
+        run: |
+          echo "Running database migrations..."
+          ssh "${SSH_USER}@${TARGET_HOST}" "
+            set -e
+            if [ -d '${{ inputs.deploy_dir }}/migration/scripts' ]; then
+              for f in \$(find ${{ inputs.deploy_dir }}/migration/scripts -name '*.up.sql' -type f | sort); do
+                echo \"Applying \$f\"
+                cat \"\$f\" | docker compose \
+                  --project-directory ${{ inputs.postgres_deploy_dir }} \
+                  -f ${{ inputs.postgres_deploy_dir }}/${{ inputs.postgres_compose_file }} \
+                  exec -T postgres psql \
+                  -U ${{ inputs.database_user }} \
+                  -d ${{ inputs.database_name }} \
+                  -v ON_ERROR_STOP=1
+              done
+              echo 'Migrations applied successfully.'
+            fi
+          "
+
+      - name: Restart containers with new image and env
+        env:
+          TARGET_HOST: ${{ inputs.ssh_host || vars.DEPLOY_HOST || secrets.ORACLE_SSH_HOST || '140.245.121.147' }}
+          SSH_USER: ${{ secrets.ORACLE_SSH_USER || 'ubuntu' }}
+        run: |
+          echo "Restarting service ${{ inputs.service_name }}..."
+          ssh "${SSH_USER}@${TARGET_HOST}" "
+            cd ${{ inputs.deploy_dir }} && \
+            export DEPLOY_TAG='${{ inputs.deploy_tag }}' && \
+            docker compose -f ${{ inputs.compose_file }} up -d --remove-orphans
+          "
+
+      - name: Verify HTTP health check
+        if: inputs.healthcheck_type == 'http'
+        env:
+          TARGET_HOST: ${{ inputs.ssh_host || vars.DEPLOY_HOST || secrets.ORACLE_SSH_HOST || '140.245.121.147' }}
+          SSH_USER: ${{ secrets.ORACLE_SSH_USER || 'ubuntu' }}
+        run: |
+          echo "Polling ${{ inputs.healthcheck_url }} for up to 30 seconds..."
+          for i in $(seq 1 10); do
+            echo "Health check attempt $i/10..."
+            if ssh "${SSH_USER}@${TARGET_HOST}" "curl --fail --silent --show-error --max-time 3 '${{ inputs.healthcheck_url }}' >/dev/null"; then
+              echo "HTTP health check passed! Deploy succeeded."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::HTTP health check failed"
+          ssh "${SSH_USER}@${TARGET_HOST}" "cd ${{ inputs.deploy_dir }} && docker compose -f ${{ inputs.compose_file }} ps && docker compose -f ${{ inputs.compose_file }} logs --tail 50" || true
+          exit 1
+
+      - name: Verify gRPC health check
+        if: inputs.healthcheck_type == 'grpc'
+        env:
+          TARGET_HOST: ${{ inputs.ssh_host || vars.DEPLOY_HOST || secrets.ORACLE_SSH_HOST || '140.245.121.147' }}
+          SSH_USER: ${{ secrets.ORACLE_SSH_USER || 'ubuntu' }}
+        run: |
+          echo "Verifying gRPC service health..."
+          for i in $(seq 1 10); do
+            echo "Health check attempt $i/10..."
+            if ssh "${SSH_USER}@${TARGET_HOST}" "
+              cd ${{ inputs.deploy_dir }}
+              if docker compose -f ${{ inputs.compose_file }} exec -T grpc ./healthcheck 2>/dev/null; then
+                exit 0
+              fi
+              # Check if container health status is healthy
+              status=\$(docker compose -f ${{ inputs.compose_file }} ps --format '{{.Health}}' 2>/dev/null || true)
+              if echo \"\$status\" | grep -q 'healthy'; then
+                exit 0
+              fi
+              # Check if running
+              state=\$(docker compose -f ${{ inputs.compose_file }} ps --format '{{.State}}' 2>/dev/null || true)
+              if echo \"\$state\" | grep -q 'running'; then
+                exit 0
+              fi
+              exit 1
+            "; then
+              echo "gRPC health check passed! Deploy succeeded."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::gRPC health check failed"
+          ssh "${SSH_USER}@${TARGET_HOST}" "cd ${{ inputs.deploy_dir }} && docker compose -f ${{ inputs.compose_file }} ps && docker compose -f ${{ inputs.compose_file }} logs --tail 50" || true
+          exit 1
+
+      - name: Clean up unused Docker images
+        env:
+          TARGET_HOST: ${{ inputs.ssh_host || vars.DEPLOY_HOST || secrets.ORACLE_SSH_HOST || '140.245.121.147' }}
+          SSH_USER: ${{ secrets.ORACLE_SSH_USER || 'ubuntu' }}
+        run: |
+          ssh "${SSH_USER}@${TARGET_HOST}" "docker image prune -f" || true

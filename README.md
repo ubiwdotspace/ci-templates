@@ -29,7 +29,23 @@ Builds Docker container image on GitHub Actions runner with multi-arch/ARM64 QEM
 * `platforms`: Target platforms for buildx (defaults to `linux/arm64` for Oracle Ampere A1).
 * `dockerfile`: Path to Dockerfile (defaults to `Dockerfile`).
 
-### `golang-deploy-template.yml`
+### `docker-deploy-ghcr-template.yml`
+
+Deploys pre-built GHCR Docker images to VPS via SSH with automated secrets synchronization from Vaultwarden.
+
+**Flow**: git checkout tag → pull `.env` via `pull-service-env.sh` → pull GHCR images (`docker compose pull`) → migrate shared PostgreSQL (optional) → restart containers (`docker compose up -d`) → HTTP/gRPC health check → prune unused images
+
+**Inputs**:
+* `service_name` (required): Service identifier (`auth-service`, `luvmatch-be`, `payment-service`, `machine-learning`)
+* `deploy_dir` (required): Absolute path on server (e.g., `/var/www/auth-service`)
+* `deploy_tag` (required): Tag to deploy (e.g., `v1.0.0`)
+* `ssh_host`: Target server IP/hostname
+* `compose_file`: Compose file (default `docker-compose.prod.yml`)
+* `run_migrations`: Boolean (default `false`)
+* `healthcheck_type`: `http`, `grpc`, or `none`
+* `healthcheck_url`: URL for HTTP check
+
+### `golang-deploy-template.yml` (Legacy)
 
 Deploys a Go backend service to Oracle Cloud via SSH. Triggered by child repos using `workflow_call`. Database migrations can be disabled for stateless services, and health checks support HTTP or the standard gRPC health service.
 
