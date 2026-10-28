@@ -1,3 +1,18 @@
+# ci-templates (compatibility only)
+
+Shared CI/CD is moving to [infrastructure](https://github.com/ubiwdotspace/infrastructure/tree/codex/centralize-ci/ci).
+Use its versioned `ci-container.yml` and `cd-service.yml` workflows for new callers.
+The migration is under review; consumer PRs require private-workflow access before
+merge. Existing tags in this repository remain available and must not be moved.
+Do not archive or delete this repository until all consumers have migrated.
+
+The build/cache improvements previously proposed here are carried by
+`infrastructure@ci-v1.3.0-rc.1`; this PR now documents the compatibility boundary.
+
+## Historical reference
+
+The following describes the retained legacy templates and their original calls.
+
 # ci-templates
 
 Centralized CI/CD workflows for LuvMatch backend services (`ubiwdotspace`).
@@ -6,41 +21,13 @@ Centralized CI/CD workflows for LuvMatch backend services (`ubiwdotspace`).
 
 ### `docker-build-ghcr-template.yml`
 
-Builds Docker container images for PR checks and GHCR publishing through the
-same implementation. `push: false` builds without logging in or publishing;
-the default `push: true` publishes to `ghcr.io/ubiwdotspace/...`. Published
-images keep the release tag, commit SHA (`sha-...`), and tag-triggered `latest`.
-
-GitHub Actions build cache is scoped by image name and API so parallel REST
-and gRPC builds do not overwrite each other's cache. Existing callers need
-no new inputs; the first build after upgrading starts a new cache scope.
+Builds Docker container image on GitHub Actions runner with multi-arch/ARM64 QEMU support and pushes to GitHub Container Registry (`ghcr.io/ubiwdotspace/...`). Tagged with release tag, commit SHA (`sha-...`), and `latest`.
 
 **Inputs**:
 * `image_name` (required): Target image name in GHCR (e.g., `auth-service-rest`).
 * `build_arg_api`: Target binary to compile (`rest` or `grpc`). Defaults to `rest`.
 * `platforms`: Target platforms for buildx (defaults to `linux/arm64` for Oracle Ampere A1).
 * `dockerfile`: Path to Dockerfile (defaults to `Dockerfile`).
-* `push`: Publish to GHCR (defaults to `true`; set `false` for PR builds).
-* `runner`: Compatible runner label (defaults to `ubuntu-latest`). Ubuntu is
-  convenient, but a Linux self-hosted runner with Docker can also be used.
-* `timeout_minutes`: Job timeout (defaults to GitHub's existing 360-minute
-  limit; callers can explicitly use a shorter limit such as `15`).
-
-Callers control token permissions: use `contents: read` for build-only jobs,
-and add `packages: write` for publishing. The template inherits those
-permissions and uses the caller's `GITHUB_TOKEN`; do not inherit runtime
-secrets for image builds.
-
-Both modes use `docker/build-push-action@v6`, which produces GitHub job logs,
-timings, a build summary, and a downloadable `.dockerbuild` record by default.
-Record retention follows the repository/organization policy. This record
-contains build diagnostics, not an image archive; published images live in
-GHCR, and PR builds do not upload an image tarball.
-
-Service repositories keep their event triggers and image/API configuration;
-checkout, Buildx/QEMU, cache, build, optional login/push, and build records
-belong here. Pin callers to a published version tag. The current review
-candidate is `v1.3.0-rc.1`; do not move existing version tags.
 
 ### `golang-deploy-template.yml`
 
