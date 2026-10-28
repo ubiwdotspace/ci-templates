@@ -95,6 +95,7 @@ jobs:
           ssh "${SSH_USER}@${TARGET_HOST}" "
             cd ${{ inputs.deploy_dir }} && \
             git fetch --tags --force && \
+            git reset --hard && \
             git checkout ${{ inputs.deploy_tag }} && \
             git reset --hard ${{ inputs.deploy_tag }}
           "
