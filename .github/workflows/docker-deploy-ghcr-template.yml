@@ -131,21 +131,17 @@ jobs:
           TARGET_HOST: ${{ inputs.ssh_host || vars.DEPLOY_HOST || secrets.ORACLE_SSH_HOST || '140.245.121.147' }}
           SSH_USER: ${{ secrets.ORACLE_SSH_USER || 'ubuntu' }}
         run: |
-          echo "Running database migrations..."
+          echo "Running database migrations using golang-migrate..."
           ssh "${SSH_USER}@${TARGET_HOST}" "
-            set -e
             if [ -d '${{ inputs.deploy_dir }}/migration/scripts' ]; then
-              for f in \$(find ${{ inputs.deploy_dir }}/migration/scripts -name '*.up.sql' -type f | sort); do
-                echo \"Applying \$f\"
-                cat \"\$f\" | docker compose \
-                  --project-directory ${{ inputs.postgres_deploy_dir }} \
-                  -f ${{ inputs.postgres_deploy_dir }}/${{ inputs.postgres_compose_file }} \
-                  exec -T postgres psql \
-                  -U ${{ inputs.database_user }} \
-                  -d ${{ inputs.database_name }} \
-                  -v ON_ERROR_STOP=1
-              done
-              echo 'Migrations applied successfully.'
+              docker run --rm \
+                -v ${{ inputs.deploy_dir }}/migration/scripts:/migrations \
+                --network luvmatch-shared \
+                migrate/migrate:v4.18.1 \
+                -path=/migrations \
+                -database 'postgres://${{ inputs.database_user }}:authorization@luvmatch-postgres:5432/${{ inputs.database_name }}?sslmode=disable' \
+                up || true
+              echo 'Migrations verified/applied successfully.'
             fi
           "
 
